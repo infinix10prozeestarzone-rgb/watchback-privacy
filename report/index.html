@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>WatchBack report</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#fff; --fg:#202124; --muted:#5f6368; --line:#e3e3e3;
+    --accent:#c5003c; --ok:#188038; --zero:#f5f6f7; --card:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#131314; --fg:#e8eaed; --muted:#9aa0a6; --line:#3c4043;
+      --accent:#ff5c8a; --ok:#81c995; --zero:#1e2022; --card:#1b1c1d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:20px; background:var(--bg); color:var(--fg);
+    font:14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  h2 { font-size:15px; margin:30px 0 8px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 18px; }
+  .wrap { overflow-x:auto; -webkit-overflow-scrolling:touch;
+    border:1px solid var(--line); border-radius:10px; }
+  table { border-collapse:collapse; font-size:13px; width:100%; }
+  th, td { padding:7px 10px; text-align:left;
+    border-bottom:1px solid var(--line); white-space:nowrap; }
+  tr:last-child td { border-bottom:0; }
+  th { color:var(--muted); font-weight:600; font-size:11px;
+    text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0;
+    background:var(--bg); }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .cell { text-align:center; font-variant-numeric:tabular-nums; padding:7px 6px; }
+  .off { color:var(--muted); background:var(--zero); }
+  .on  { color:var(--ok); font-weight:700; }
+  .who { position:sticky; left:0; background:var(--bg); z-index:1;
+    max-width:210px; overflow:hidden; text-overflow:ellipsis; }
+  .cards { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+  .card { flex:1 1 120px; border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; background:var(--card); color:var(--muted);
+    font-size:12px; }
+  .big { font-size:26px; font-weight:700; color:var(--fg); line-height:1.1; }
+  form { max-width:320px; margin:12vh auto 0; }
+  input { width:100%; padding:12px; font-size:16px; border-radius:8px;
+    border:1px solid var(--line); background:var(--bg); color:var(--fg);
+    letter-spacing:.08em; }
+  button { padding:11px 16px; font-size:15px; font-weight:600; border:0;
+    border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  form button { width:100%; margin-top:10px; }
+  .err { color:var(--accent); margin-top:10px; font-size:13px; min-height:20px; }
+  .bar { display:flex; gap:10px; align-items:center; margin-bottom:16px;
+    flex-wrap:wrap; }
+  .ghost { background:transparent; color:var(--accent);
+    border:1px solid var(--line); }
+  footer { margin-top:30px; color:var(--muted); font-size:12px; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+
+<form id="login">
+  <h1>WatchBack report</h1>
+  <p class="sub">Enter the passkey.</p>
+  <input id="key" type="password" autocomplete="current-password"
+         autofocus required aria-label="Passkey">
+  <button type="submit" id="go">Open</button>
+  <p class="err" id="err"></p>
+</form>
+
+<main id="report" class="hide"></main>
+
+<script>
+// The report's data lives behind this function. Nothing secret is in this file:
+// the passkey is typed by whoever opens the page and is only ever sent in a
+// POST body, and the reply is readable only from this origin because the
+// function names it in its CORS header.
+const API = 'https://gqzdkxkiceoxoszcprli.supabase.co/functions/v1/report';
+
+// sessionStorage, not localStorage: the token dies when the tab closes, so a
+// shared or borrowed device does not stay signed in.
+const TOKEN_KEY = 'wb_report_token';
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function call(body) {
+  const res = await fetch(API, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await res.json(); } catch (_) { /* non-JSON error page */ }
+  return { ok: res.ok, status: res.status, data };
+}
+
+function message(r) {
+  if (!r.data) return 'Could not reach the report. Check your connection.';
+  if (r.data.error === 'locked' || r.data.seconds > 0) {
+    return `Too many tries. Wait ${Math.ceil(r.data.seconds / 60)} minutes.`;
+  }
+  if (r.data.error === 'denied') return 'That did not work.';
+  if (r.data.error === 'not_configured') return 'The report has no passkey set.';
+  return 'Something went wrong.';
+}
+
+function render(d) {
+  const days = [...new Set(d.person_day.map((r) => r.day))].sort();
+  const people = new Map();
+
+  for (const r of d.person_day) {
+    let p = people.get(r.email);
+    if (!p) {
+      p = { email: r.email, balance: r.balance, activeDays: 0, byDay: {} };
+      people.set(r.email, p);
+    }
+    const did = r.watched + r.reviewed + r.campaigns + r.asked;
+    // Opening the app counts as one thing done, so someone who looked and left
+    // still shows up rather than reading as absent.
+    p.byDay[r.day] = did > 0 ? did : (r.opens > 0 ? 1 : 0);
+    if (r.active) p.activeDays++;
+  }
+
+  // Busiest first, so the people who have gone quiet gather at the bottom
+  // where they are easy to spot.
+  const rows = [...people.values()].sort((a, b) => b.activeDays - a.activeDays);
+  const today = d.daily[0] || {};
+
+  const head = days.map((x) => `<th class="cell">${esc(x.slice(5))}</th>`).join('');
+  const body = rows.map((p) => `<tr>
+      <td class="who">${esc(p.email)}</td>
+      ${days.map((x) => {
+        const v = p.byDay[x] || 0;
+        return `<td class="cell ${v ? 'on' : 'off'}">${v || '&middot;'}</td>`;
+      }).join('')}
+      <td class="n">${p.activeDays}</td>
+      <td class="n">${p.balance}</td>
+    </tr>`).join('');
+
+  const daily = d.daily.map((x) => `<tr>
+      <td>${esc(x.day)}</td>
+      ${['people_active','new_users','videos_watched','videos_posted',
+         'reviews_asked','reviews_written','coins_paid_out']
+        .map((k) => `<td class="n">${esc(x[k] ?? 0)}</td>`).join('')}
+    </tr>`).join('');
+
+  $('report').innerHTML = `
+    <div class="bar">
+      <h1 style="margin:0">WatchBack report</h1>
+      <button class="ghost" id="refresh" type="button">Refresh</button>
+      <button class="ghost" id="out" type="button">Lock</button>
+    </div>
+    <p class="sub">Read at ${esc(new Date(d.generated_at).toLocaleString())}</p>
+
+    <div class="cards">
+      <div class="card"><div class="big">${esc(today.people_active ?? 0)}</div>active today</div>
+      <div class="card"><div class="big">${rows.length}</div>people total</div>
+      <div class="card"><div class="big">${esc(today.videos_watched ?? 0)}</div>watched today</div>
+      <div class="card"><div class="big">${esc(today.videos_posted ?? 0)}</div>posted today</div>
+      <div class="card"><div class="big">${esc(today.reviews_written ?? 0)}</div>reviews today</div>
+    </div>
+
+    <h2>Who did what, by day</h2>
+    <p class="sub">A number is how many things that person did that day &mdash;
+      watching, posting, asking for feedback or giving it. A dot means nothing
+      at all. Scroll sideways for older days.</p>
+    <div class="wrap"><table>
+      <thead><tr><th class="who">Person</th>${head}
+        <th class="n">Active days</th><th class="n">Coins</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+
+    <h2>Every day, everyone together</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>Day</th><th class="n">Active</th><th class="n">New</th>
+        <th class="n">Watched</th><th class="n">Posted</th><th class="n">Asked</th>
+        <th class="n">Reviews</th><th class="n">Coins out</th></tr></thead>
+      <tbody>${daily}</tbody>
+    </table></div>
+
+    <footer>Live from the database every time you open or refresh this page.
+      The only thing kept in this browser is a sign-in token that expires after
+      8 hours, or when you close the tab.</footer>`;
+
+  $('refresh').onclick = () => load({ token: sessionStorage.getItem(TOKEN_KEY) });
+  $('out').onclick = () => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    $('report').classList.add('hide');
+    $('login').classList.remove('hide');
+    $('key').value = '';
+    $('err').textContent = '';
+  };
+}
+
+async function load(body) {
+  const r = await call(body);
+  if (!r.ok) {
+    // An expired or rejected token means the passkey is needed again; say so
+    // rather than leaving a stale page on screen.
+    sessionStorage.removeItem(TOKEN_KEY);
+    $('report').classList.add('hide');
+    $('login').classList.remove('hide');
+    $('err').textContent = message(r);
+    return false;
+  }
+  sessionStorage.setItem(TOKEN_KEY, r.data.token);
+  $('login').classList.add('hide');
+  $('report').classList.remove('hide');
+  render(r.data);
+  return true;
+}
+
+$('login').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('go').disabled = true;
+  $('err').textContent = '';
+  await load({ key: $('key').value });
+  $('key').value = '';
+  $('go').disabled = false;
+});
+
+// A token from earlier in this tab's life skips the passkey.
+const saved = sessionStorage.getItem(TOKEN_KEY);
+if (saved) load({ token: saved });
+</script>
+</body>
+</html>
