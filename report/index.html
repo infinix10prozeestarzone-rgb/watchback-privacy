@@ -144,13 +144,35 @@ function render(d) {
         .map((k) => `<td class="n">${esc(x[k] ?? 0)}</td>`).join('')}
     </tr>`).join('');
 
+  // at_pkt is already Pakistan wall-clock time from the database. Do NOT feed it
+  // to new Date() and reformat -- the browser would treat it as local or UTC and
+  // shift it again, which is the exact class of bug this section exists to fix.
+  // Prefer the server's pre-formatted Pakistan time; fall back to parsing the
+  // ISO field so this page keeps working against an older deployment.
+  const readAt = d.generated_at_pkt ||
+    new Date(d.generated_at).toLocaleString('en-GB', {
+      timeZone: 'Asia/Karachi', dateStyle: 'medium', timeStyle: 'short',
+    }) + ' PKT';
+
+  const actions = (d.person_actions || []).map((a) => {
+    const t = String(a.at_pkt).replace('T', ' ').slice(0, 16);
+    const c = a.coins > 0 ? '+' + a.coins : (a.coins === 0 ? '' : a.coins);
+    return `<tr>
+      <td>${esc(t)}</td>
+      <td class="who">${esc(a.email)}</td>
+      <td>${esc(a.task)}</td>
+      <td class="n">${esc(c)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="4">Nothing in the last three days.</td></tr>';
+
   $('report').innerHTML = `
     <div class="bar">
       <h1 style="margin:0">WatchBack report</h1>
       <button class="ghost" id="refresh" type="button">Refresh</button>
       <button class="ghost" id="out" type="button">Lock</button>
     </div>
-    <p class="sub">Read at ${esc(new Date(d.generated_at).toLocaleString())}</p>
+    <p class="sub">Read at ${esc(readAt)} &middot;
+      all times on this page are Pakistan Standard Time</p>
 
     <div class="cards">
       <div class="card"><div class="big">${esc(today.people_active ?? 0)}</div>active today</div>
@@ -161,13 +183,23 @@ function render(d) {
     </div>
 
     <h2>Who did what, by day</h2>
-    <p class="sub">A number is how many things that person did that day &mdash;
+    <p class="sub">A number is how many things that person did that day —
       watching, posting, asking for feedback or giving it. A dot means nothing
       at all. Scroll sideways for older days.</p>
     <div class="wrap"><table>
       <thead><tr><th class="who">Person</th>${head}
         <th class="n">Active days</th><th class="n">Coins</th></tr></thead>
       <tbody>${body}</tbody>
+    </table></div>
+
+    <h2>What happened, and when</h2>
+    <p class="sub">The last three days, newest first, in Pakistan time. This is
+      the view that settles &ldquo;I watched but it did not count&rdquo; —
+      including attempts where the video never actually played.</p>
+    <div class="wrap"><table>
+      <thead><tr><th>Time (PKT)</th><th class="who">Person</th>
+        <th>Task</th><th class="n">Coins</th></tr></thead>
+      <tbody>${actions}</tbody>
     </table></div>
 
     <h2>Every day, everyone together</h2>
