@@ -139,7 +139,7 @@ function render(d) {
 
   const daily = d.daily.map((x) => `<tr>
       <td>${esc(x.day)}</td>
-      ${['people_active','new_users','videos_watched','videos_posted',
+      ${['people_active','people_doing','new_users','videos_watched','videos_posted',
          'reviews_asked','reviews_written','coins_paid_out']
         .map((k) => `<td class="n">${esc(x[k] ?? 0)}</td>`).join('')}
     </tr>`).join('');
@@ -175,12 +175,18 @@ function render(d) {
       all times on this page are Pakistan Standard Time</p>
 
     <div class="cards">
-      <div class="card"><div class="big">${esc(today.people_active ?? 0)}</div>active today</div>
+      <div class="card"><div class="big">${esc(today.people_active ?? 0)}</div>opened the app</div>
+      <div class="card"><div class="big">${esc(today.people_doing ?? 0)}</div>did a task</div>
       <div class="card"><div class="big">${rows.length}</div>people total</div>
       <div class="card"><div class="big">${esc(today.videos_watched ?? 0)}</div>watched today</div>
       <div class="card"><div class="big">${esc(today.videos_posted ?? 0)}</div>posted today</div>
       <div class="card"><div class="big">${esc(today.reviews_written ?? 0)}</div>reviews today</div>
     </div>
+
+    <p class="sub"><b>Opened the app</b> counts everyone who showed up.
+      <b>Did a task</b> counts only those who watched, posted, or gave or asked
+      for feedback. The gap between them is people arriving and finding nothing
+      worth doing.</p>
 
     <h2>Who did what, by day</h2>
     <p class="sub">A number is how many things that person did that day —
@@ -204,7 +210,8 @@ function render(d) {
 
     <h2>Every day, everyone together</h2>
     <div class="wrap"><table>
-      <thead><tr><th>Day</th><th class="n">Active</th><th class="n">New</th>
+      <thead><tr><th>Day</th><th class="n">Opened</th><th class="n">Did a task</th>
+        <th class="n">New</th>
         <th class="n">Watched</th><th class="n">Posted</th><th class="n">Asked</th>
         <th class="n">Reviews</th><th class="n">Coins out</th></tr></thead>
       <tbody>${daily}</tbody>
