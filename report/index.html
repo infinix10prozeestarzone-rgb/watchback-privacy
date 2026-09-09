@@ -104,6 +104,15 @@ function message(r) {
   return 'Something went wrong.';
 }
 
+// Times arrive already in Pakistan time from the server, so they are trimmed
+// rather than re-zoned. Running new Date() on them would shift them again,
+// which is the exact class of bug the note further down exists to warn about.
+function clock(ts) {
+  if (!ts) return '';
+  const t = String(ts).replace('T', ' ');
+  return t.length >= 16 ? t.slice(11, 16) : t;
+}
+
 function render(d) {
   const days = [...new Set(d.person_day.map((r) => r.day))].sort();
   const people = new Map();
@@ -115,15 +124,29 @@ function render(d) {
       people.set(r.email, p);
     }
     const did = r.watched + r.reviewed + r.campaigns + r.asked;
-    // Opening the app counts as one thing done, so someone who looked and left
-    // still shows up rather than reading as absent.
-    p.byDay[r.day] = did > 0 ? did : (r.opens > 0 ? 1 : 0);
-    if (r.active) p.activeDays++;
+    // Work only. An open used to be rendered as a 1, which made somebody who
+    // looked and left read exactly like somebody who watched a video, and
+    // contradicted the caption above this table. Opens have their own list now.
+    p.byDay[r.day] = did;
+    // Likewise: r.active is true for a day that was only opened, which gave
+    // play.review@watchback.app four active days having done nothing at all.
+    if (did > 0) p.activeDays++;
   }
 
   // Busiest first, so the people who have gone quiet gather at the bottom
   // where they are easy to spot.
   const rows = [...people.values()].sort((a, b) => b.activeDays - a.activeDays);
+
+  // Opened and did nothing. Newest first, and the count of opens matters as
+  // much as the times: twenty opens in a day with no task is a person who kept
+  // coming back and kept finding nothing worth doing.
+  const opens = (d.person_opens ?? []).map((r) => `<tr>
+      <td class="who">${esc(r.email)}</td>
+      <td>${esc(r.day)}</td>
+      <td class="n">${esc(r.opens)}</td>
+      <td>${esc(clock(r.first_pkt))}</td>
+      <td>${esc(r.opens > 1 ? clock(r.last_pkt) : '')}</td>
+    </tr>`).join('');
   const today = d.daily[0] || {};
 
   const head = days.map((x) => `<th class="cell">${esc(x.slice(5))}</th>`).join('');
@@ -196,6 +219,18 @@ function render(d) {
       <thead><tr><th class="who">Person</th>${head}
         <th class="n">Active days</th><th class="n">Coins</th></tr></thead>
       <tbody>${body}</tbody>
+    </table></div>
+
+    <h2>Opened the app, did nothing</h2>
+    <p class="sub">Days when somebody opened WatchBack and did not watch, post,
+      or give or ask for feedback. Times are Pakistan time. These days are not
+      counted in the table above — opening is not work, and treating it as work
+      made a person who only looked read the same as one who watched a video.
+      Someone appearing here often is worth asking what they could not find.</p>
+    <div class="wrap"><table>
+      <thead><tr><th class="who">Person</th><th>Day</th>
+        <th class="n">Opens</th><th>First</th><th>Last</th></tr></thead>
+      <tbody>${opens || '<tr><td colspan="5">Nobody — everyone who opened it did something.</td></tr>'}</tbody>
     </table></div>
 
     <h2>What happened, and when</h2>
