@@ -120,7 +120,8 @@ function render(d) {
   for (const r of d.person_day) {
     let p = people.get(r.email);
     if (!p) {
-      p = { email: r.email, balance: r.balance, activeDays: 0, byDay: {} };
+      p = { email: r.email, balance: r.balance, activeDays: 0, byDay: {},
+            version: r.app_version || null, lastSeen: r.last_seen || null };
       people.set(r.email, p);
     }
     const did = r.watched + r.reviewed + r.campaigns + r.asked;
@@ -148,6 +149,26 @@ function render(d) {
       <td>${esc(r.opens > 1 ? clock(r.last_pkt) : '')}</td>
     </tr>`).join('');
   const today = d.daily[0] || {};
+
+  // Who is on which build. Anyone with no version is on 0.1.4 or older, from
+  // before the app started reporting it -- which also means they have missed
+  // every fix since. Oldest first, because those are the ones to chase.
+  const LATEST = '0.1.5+7';
+  const versions = [...people.values()]
+    .filter((p) => p.lastSeen)
+    .sort((a, b) => String(a.version || '').localeCompare(String(b.version || '')))
+    .map((p) => {
+      const v = p.version || 'before 0.1.5 — never updated';
+      const cur = p.version === LATEST;
+      return `<tr>
+        <td class="who">${esc(p.email)}</td>
+        <td class="${cur ? 'on' : 'off'}">${esc(v)}</td>
+        <td>${esc(String(p.lastSeen).replace('T', ' ').slice(0, 16))}</td>
+      </tr>`;
+    }).join('');
+
+  const behind = [...people.values()]
+    .filter((p) => p.lastSeen && p.version !== LATEST).length;
 
   const head = days.map((x) => `<th class="cell">${esc(x.slice(5))}</th>`).join('');
   const body = rows.map((p) => `<tr>
@@ -219,6 +240,17 @@ function render(d) {
       <thead><tr><th class="who">Person</th>${head}
         <th class="n">Active days</th><th class="n">Coins</th></tr></thead>
       <tbody>${body}</tbody>
+    </table></div>
+
+    <h2>Which build everyone is on</h2>
+    <p class="sub">${behind} of ${[...people.values()].filter((p) => p.lastSeen).length}
+      are not on ${esc(LATEST)}. A blank version means a build from before the app
+      started reporting one, so that person has also missed every fix since.
+      Times are when they last opened the app, Pakistan time.</p>
+    <div class="wrap"><table>
+      <thead><tr><th class="who">Person</th><th>Build</th>
+        <th>Last opened</th></tr></thead>
+      <tbody>${versions}</tbody>
     </table></div>
 
     <h2>Opened the app, did nothing</h2>
