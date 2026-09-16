@@ -121,7 +121,10 @@ function render(d) {
     let p = people.get(r.email);
     if (!p) {
       p = { email: r.email, balance: r.balance, activeDays: 0, byDay: {},
-            version: r.app_version || null, lastSeen: r.last_seen || null };
+            version: r.app_version || null, lastSeen: r.last_seen || null,
+            // Every kind of device this person has opened the app on, newest
+            // first. Blank for anyone still on a build that does not say.
+            devices: r.devices || null };
       people.set(r.email, p);
     }
     const did = r.watched + r.reviewed + r.campaigns + r.asked;
@@ -147,13 +150,14 @@ function render(d) {
       <td class="n">${esc(r.opens)}</td>
       <td>${esc(clock(r.first_pkt))}</td>
       <td>${esc(r.opens > 1 ? clock(r.last_pkt) : '')}</td>
+      <td>${esc(r.devices || '—')}</td>
     </tr>`).join('');
   const today = d.daily[0] || {};
 
   // Who is on which build. Anyone with no version is on 0.1.4 or older, from
   // before the app started reporting it -- which also means they have missed
   // every fix since. Oldest first, because those are the ones to chase.
-  const LATEST = '0.1.5+7';
+  const LATEST = '0.1.7+10';
   const versions = [...people.values()]
     .filter((p) => p.lastSeen)
     .sort((a, b) => String(a.version || '').localeCompare(String(b.version || '')))
@@ -163,6 +167,7 @@ function render(d) {
       return `<tr>
         <td class="who">${esc(p.email)}</td>
         <td class="${cur ? 'on' : 'off'}">${esc(v)}</td>
+        <td>${esc(p.devices || '—')}</td>
         <td>${esc(String(p.lastSeen).replace('T', ' ').slice(0, 16))}</td>
       </tr>`;
     }).join('');
@@ -246,10 +251,12 @@ function render(d) {
     <p class="sub">${behind} of ${[...people.values()].filter((p) => p.lastSeen).length}
       are not on ${esc(LATEST)}. A blank version means a build from before the app
       started reporting one, so that person has also missed every fix since.
+      Devices are every kind this person has opened the app on, newest first; a
+      dash means they have not opened a build new enough to say.
       Times are when they last opened the app, Pakistan time.</p>
     <div class="wrap"><table>
       <thead><tr><th class="who">Person</th><th>Build</th>
-        <th>Last opened</th></tr></thead>
+        <th>Devices</th><th>Last opened</th></tr></thead>
       <tbody>${versions}</tbody>
     </table></div>
 
@@ -261,8 +268,9 @@ function render(d) {
       Someone appearing here often is worth asking what they could not find.</p>
     <div class="wrap"><table>
       <thead><tr><th class="who">Person</th><th>Day</th>
-        <th class="n">Opens</th><th>First</th><th>Last</th></tr></thead>
-      <tbody>${opens || '<tr><td colspan="5">Nobody — everyone who opened it did something.</td></tr>'}</tbody>
+        <th class="n">Opens</th><th>First</th><th>Last</th>
+        <th>Devices</th></tr></thead>
+      <tbody>${opens || '<tr><td colspan="6">Nobody — everyone who opened it did something.</td></tr>'}</tbody>
     </table></div>
 
     <h2>What happened, and when</h2>
