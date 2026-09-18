@@ -127,18 +127,14 @@ function render(d) {
             devices: r.devices || null };
       people.set(r.email, p);
     }
-    
-    // Calculate tasks for this specific record
-    const did = (r.watched || 0) + (r.reviewed || 0) + (r.campaigns || 0) + (r.asked || 0);
-    
-    // Add to existing tasks for the day instead of overwriting
-    const previousDid = p.byDay[r.day] || 0;
-    p.byDay[r.day] = previousDid + did;
-    
-    // Only count as an active day if they just went from 0 to >0 tasks
-    if (previousDid === 0 && p.byDay[r.day] > 0) {
-      p.activeDays++;
-    }
+    const did = r.watched + r.reviewed + r.campaigns + r.asked;
+    // Work only. An open used to be rendered as a 1, which made somebody who
+    // looked and left read exactly like somebody who watched a video, and
+    // contradicted the caption above this table. Opens have their own list now.
+    p.byDay[r.day] = did;
+    // Likewise: r.active is true for a day that was only opened, which gave
+    // play.review@watchback.app four active days having done nothing at all.
+    if (did > 0) p.activeDays++;
   }
 
   // Busiest first, so the people who have gone quiet gather at the bottom
@@ -300,10 +296,13 @@ function render(d) {
       The only thing kept in this browser is a sign-in token that expires after
       8 hours, or when you close the tab.</footer>`;
 
-  $('refresh').onclick = () => load({ token: sessionStorage.getItem(TOKEN_KEY) });$('out').onclick = () => {
+  $('refresh').onclick = () => load({ token: sessionStorage.getItem(TOKEN_KEY) });
+  $('out').onclick = () => {
     sessionStorage.removeItem(TOKEN_KEY);
-    $('report').classList.add('hide');$('login').classList.remove('hide');
-    $('key').value = '';$('err').textContent = '';
+    $('report').classList.add('hide');
+    $('login').classList.remove('hide');
+    $('key').value = '';
+    $('err').textContent = '';
   };
 }
 
@@ -314,19 +313,24 @@ async function load(body) {
     // rather than leaving a stale page on screen.
     sessionStorage.removeItem(TOKEN_KEY);
     $('report').classList.add('hide');
-    $('login').classList.remove('hide');$('err').textContent = message(r);
+    $('login').classList.remove('hide');
+    $('err').textContent = message(r);
     return false;
   }
   sessionStorage.setItem(TOKEN_KEY, r.data.token);
-  $('login').classList.add('hide');$('report').classList.remove('hide');
+  $('login').classList.add('hide');
+  $('report').classList.remove('hide');
   render(r.data);
   return true;
 }
 
-$('login').addEventListener('submit', async (e) => {   e.preventDefault();$('go').disabled = true;
+$('login').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('go').disabled = true;
   $('err').textContent = '';
   await load({ key: $('key').value });
-  $('key').value = '';$('go').disabled = false;
+  $('key').value = '';
+  $('go').disabled = false;
 });
 
 // A token from earlier in this tab's life skips the passkey.
