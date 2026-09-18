@@ -1,341 +1,231 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow">
-<title>WatchBack report</title>
-<style>
-  :root { color-scheme: light dark;
-    --bg:#fff; --fg:#202124; --muted:#5f6368; --line:#e3e3e3;
-    --accent:#c5003c; --ok:#188038; --zero:#f5f6f7; --card:#fff; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#131314; --fg:#e8eaed; --muted:#9aa0a6; --line:#3c4043;
-      --accent:#ff5c8a; --ok:#81c995; --zero:#1e2022; --card:#1b1c1d; }
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; padding:20px; background:var(--bg); color:var(--fg);
-    font:14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
-  h1 { font-size:20px; margin:0 0 4px; }
-  h2 { font-size:15px; margin:30px 0 8px; }
-  .sub { color:var(--muted); font-size:13px; margin:0 0 18px; }
-  .wrap { overflow-x:auto; -webkit-overflow-scrolling:touch;
-    border:1px solid var(--line); border-radius:10px; }
-  table { border-collapse:collapse; font-size:13px; width:100%; }
-  th, td { padding:7px 10px; text-align:left;
-    border-bottom:1px solid var(--line); white-space:nowrap; }
-  tr:last-child td { border-bottom:0; }
-  th { color:var(--muted); font-weight:600; font-size:11px;
-    text-transform:uppercase; letter-spacing:.04em; position:sticky; top:0;
-    background:var(--bg); }
-  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
-  .cell { text-align:center; font-variant-numeric:tabular-nums; padding:7px 6px; }
-  .off { color:var(--muted); background:var(--zero); }
-  .on  { color:var(--ok); font-weight:700; }
-  .who { position:sticky; left:0; background:var(--bg); z-index:1;
-    max-width:210px; overflow:hidden; text-overflow:ellipsis; }
-  .cards { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
-  .card { flex:1 1 120px; border:1px solid var(--line); border-radius:10px;
-    padding:12px 14px; background:var(--card); color:var(--muted);
-    font-size:12px; }
-  .big { font-size:26px; font-weight:700; color:var(--fg); line-height:1.1; }
-  form { max-width:320px; margin:12vh auto 0; }
-  input { width:100%; padding:12px; font-size:16px; border-radius:8px;
-    border:1px solid var(--line); background:var(--bg); color:var(--fg);
-    letter-spacing:.08em; }
-  button { padding:11px 16px; font-size:15px; font-weight:600; border:0;
-    border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
-  form button { width:100%; margin-top:10px; }
-  .err { color:var(--accent); margin-top:10px; font-size:13px; min-height:20px; }
-  .bar { display:flex; gap:10px; align-items:center; margin-bottom:16px;
-    flex-wrap:wrap; }
-  .ghost { background:transparent; color:var(--accent);
-    border:1px solid var(--line); }
-  footer { margin-top:30px; color:var(--muted); font-size:12px; }
-  .hide { display:none; }
-</style>
-</head>
-<body>
+// WatchBack tester report — the data half.
+//
+// This returns JSON, not a page. Supabase rewrites every Edge Function response
+// on the default *.supabase.co domain to `Content-Type: text/plain` with a
+// sandbox CSP, deliberately, so the functions domain cannot be used to serve
+// web content. A browser therefore shows the source of any HTML sent from here
+// instead of rendering it. The page that consumes this lives on GitHub Pages,
+// which serves real HTML for free.
+//
+// Threat model, since this URL is public and the data behind it is tester email
+// addresses:
+//
+//   * The passkey exists in no system at all — only sha256(salt || passkey) is
+//     stored — so this file, this repo and the database all leak nothing.
+//   * It is compared as a digest, not as a string, so the time taken to reject
+//     a wrong key says nothing about how wrong it was.
+//   * It is only ever sent in a POST body. A key in the query string ends up in
+//     browser history, in server logs, and in the Referer of every outbound
+//     link.
+//   * Five wrong tries locks that caller out for 15 minutes, counted in the
+//     database because an Edge Function remembers nothing between requests. The
+//     lockout is keyed on a salted hash of the IP, so this table never becomes
+//     a record of where the owner has been.
+//   * A correct key returns a signed 8-hour token. The page holds it in
+//     sessionStorage, so closing the tab throws it away.
+//   * CORS names one origin. A page on any other site cannot read a reply, even
+//     holding a valid token.
+//   * Not one byte of tester data is read from the database before the token or
+//     the passkey checks out.
+//
+// Rotate the passkey with:  select admin.set_report_passkey('NEW-KEY');
 
-<form id="login">
-  <h1>WatchBack report</h1>
-  <p class="sub">Enter the passkey.</p>
-  <input id="key" type="password" autocomplete="current-password"
-         autofocus required aria-label="Passkey">
-  <button type="submit" id="go">Open</button>
-  <p class="err" id="err"></p>
-</form>
+import { createClient } from 'jsr:@supabase/supabase-js@2';
 
-<main id="report" class="hide"></main>
+const SESSION_HOURS = 8;
 
-<script>
-// The report's data lives behind this function. Nothing secret is in this file:
-// the passkey is typed by whoever opens the page and is only ever sent in a
-// POST body, and the reply is readable only from this origin because the
-// function names it in its CORS header.
-const API = 'https://gqzdkxkiceoxoszcprli.supabase.co/functions/v1/report';
+// The one page allowed to read a reply. Anything else gets no CORS header and
+// so cannot see the body, whatever it sends.
+const ALLOWED_ORIGINS = [
+  'https://infinix10prozeestarzone-rgb.github.io',
+  'http://localhost:8000',
+];
 
-// sessionStorage, not localStorage: the token dies when the tab closes, so a
-// shared or borrowed device does not stay signed in.
-const TOKEN_KEY = 'wb_report_token';
+const enc = new TextEncoder();
 
-const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-async function call(body) {
-  const res = await fetch(API, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  let data = null;
-  try { data = await res.json(); } catch (_) { /* non-JSON error page */ }
-  return { ok: res.ok, status: res.status, data };
+interface Secrets {
+  salt: string;
+  passkey_sha256: string;
+  session_secret: string;
 }
 
-function message(r) {
-  if (!r.data) return 'Could not reach the report. Check your connection.';
-  if (r.data.error === 'locked' || r.data.seconds > 0) {
-    return `Too many tries. Wait ${Math.ceil(r.data.seconds / 60)} minutes.`;
-  }
-  if (r.data.error === 'denied') return 'That did not work.';
-  if (r.data.error === 'not_configured') return 'The report has no passkey set.';
-  return 'Something went wrong.';
+function toHex(buf: ArrayBuffer): string {
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Times arrive already in Pakistan time from the server, so they are trimmed
-// rather than re-zoned. Running new Date() on them would shift them again,
-// which is the exact class of bug the note further down exists to warn about.
-function clock(ts) {
-  if (!ts) return '';
-  const t = String(ts).replace('T', ' ');
-  return t.length >= 16 ? t.slice(11, 16) : t;
+async function sha256(text: string): Promise<string> {
+  return toHex(await crypto.subtle.digest('SHA-256', enc.encode(text)));
 }
 
-function render(d) {
-  const days = [...new Set(d.person_day.map((r) => r.day))].sort();
-  const people = new Map();
+async function hmac(secret: string, message: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+  );
+  return toHex(await crypto.subtle.sign('HMAC', key, enc.encode(message)));
+}
 
-  for (const r of d.person_day) {
-    let p = people.get(r.email);
-    if (!p) {
-      p = { email: r.email, balance: r.balance, activeDays: 0, byDay: {},
-            version: r.app_version || null, lastSeen: r.last_seen || null,
-            // Every kind of device this person has opened the app on, newest
-            // first. Blank for anyone still on a build that does not say.
-            devices: r.devices || null };
-      people.set(r.email, p);
-    }
-    const did = r.watched + r.reviewed + r.campaigns + r.asked;
-    // Work only. An open used to be rendered as a 1, which made somebody who
-    // looked and left read exactly like somebody who watched a video, and
-    // contradicted the caption above this table. Opens have their own list now.
-    p.byDay[r.day] = did;
-    // Likewise: r.active is true for a day that was only opened, which gave
-    // play.review@watchback.app four active days having done nothing at all.
-    if (did > 0) p.activeDays++;
-  }
+/**
+ * Compares two equal-length hex digests without leaking where they differ.
+ *
+ * Every caller passes digests, never raw input, so the loop always runs over 64
+ * characters and its duration says nothing about how close a guess was.
+ */
+function sameDigest(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
-  // Busiest first, so the people who have gone quiet gather at the bottom
-  // where they are easy to spot.
-  const rows = [...people.values()].sort((a, b) => b.activeDays - a.activeDays);
+async function issueToken(sec: Secrets): Promise<string> {
+  const exp = Date.now() + SESSION_HOURS * 3600_000;
+  return `${exp}.${await hmac(sec.session_secret, String(exp))}`;
+}
 
-  // Opened and did nothing. Newest first, and the count of opens matters as
-  // much as the times: twenty opens in a day with no task is a person who kept
-  // coming back and kept finding nothing worth doing.
-  const opens = (d.person_opens ?? []).map((r) => `<tr>
-      <td class="who">${esc(r.email)}</td>
-      <td>${esc(r.day)}</td>
-      <td class="n">${esc(r.opens)}</td>
-      <td>${esc(clock(r.first_pkt))}</td>
-      <td>${esc(r.opens > 1 ? clock(r.last_pkt) : '')}</td>
-      <td>${esc(r.devices || '—')}</td>
-    </tr>`).join('');
-  const today = d.daily[0] || {};
+async function tokenValid(token: string, sec: Secrets): Promise<boolean> {
+  const dot = token.lastIndexOf('.');
+  if (dot < 1) return false;
+  const exp = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  // Expiry first, and only via a digits-only regex, so a hostile value never
+  // reaches Number(). The signature covers the expiry, so pushing the date out
+  // invalidates the token rather than extending it.
+  if (!/^\d+$/.test(exp) || Number(exp) < Date.now()) return false;
+  return sameDigest(sig, await hmac(sec.session_secret, exp));
+}
 
-  // Who is on which build. Anyone with no version is on 0.1.4 or older, from
-  // before the app started reporting it -- which also means they have missed
-  // every fix since. Oldest first, because those are the ones to chase.
-  const LATEST = '0.1.7+10';
-  const versions = [...people.values()]
-    .filter((p) => p.lastSeen)
-    .sort((a, b) => String(a.version || '').localeCompare(String(b.version || '')))
-    .map((p) => {
-      const v = p.version || 'before 0.1.5 — never updated';
-      const cur = p.version === LATEST;
-      return `<tr>
-        <td class="who">${esc(p.email)}</td>
-        <td class="${cur ? 'on' : 'off'}">${esc(v)}</td>
-        <td>${esc(p.devices || '—')}</td>
-        <td>${esc(String(p.lastSeen).replace('T', ' ').slice(0, 16))}</td>
-      </tr>`;
-    }).join('');
+/** Salted hash of the caller's IP, so the rate-limit table holds no addresses. */
+async function ipHash(req: Request, sec: Secrets): Promise<string> {
+  const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() ||
+    'unknown';
+  return await hmac(sec.session_secret, `ip:${ip}`);
+}
 
-  const behind = [...people.values()]
-    .filter((p) => p.lastSeen && p.version !== LATEST).length;
-
-  const head = days.map((x) => `<th class="cell">${esc(x.slice(5))}</th>`).join('');
-  const body = rows.map((p) => `<tr>
-      <td class="who">${esc(p.email)}</td>
-      ${days.map((x) => {
-        const v = p.byDay[x] || 0;
-        return `<td class="cell ${v ? 'on' : 'off'}">${v || '&middot;'}</td>`;
-      }).join('')}
-      <td class="n">${p.activeDays}</td>
-      <td class="n">${p.balance}</td>
-    </tr>`).join('');
-
-  const daily = d.daily.map((x) => `<tr>
-      <td>${esc(x.day)}</td>
-      ${['people_active','people_doing','new_users','videos_watched','videos_posted',
-         'reviews_asked','reviews_written','coins_paid_out']
-        .map((k) => `<td class="n">${esc(x[k] ?? 0)}</td>`).join('')}
-    </tr>`).join('');
-
-  // at_pkt is already Pakistan wall-clock time from the database. Do NOT feed it
-  // to new Date() and reformat -- the browser would treat it as local or UTC and
-  // shift it again, which is the exact class of bug this section exists to fix.
-  // Prefer the server's pre-formatted Pakistan time; fall back to parsing the
-  // ISO field so this page keeps working against an older deployment.
-  const readAt = d.generated_at_pkt ||
-    new Date(d.generated_at).toLocaleString('en-GB', {
-      timeZone: 'Asia/Karachi', dateStyle: 'medium', timeStyle: 'short',
-    }) + ' PKT';
-
-  const actions = (d.person_actions || []).map((a) => {
-    const t = String(a.at_pkt).replace('T', ' ').slice(0, 16);
-    const c = a.coins > 0 ? '+' + a.coins : (a.coins === 0 ? '' : a.coins);
-    return `<tr>
-      <td>${esc(t)}</td>
-      <td class="who">${esc(a.email)}</td>
-      <td>${esc(a.task)}</td>
-      <td class="n">${esc(c)}</td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="4">Nothing in the last three days.</td></tr>';
-
-  $('report').innerHTML = `
-    <div class="bar">
-      <h1 style="margin:0">WatchBack report</h1>
-      <button class="ghost" id="refresh" type="button">Refresh</button>
-      <button class="ghost" id="out" type="button">Lock</button>
-    </div>
-    <p class="sub">Read at ${esc(readAt)} &middot;
-      all times on this page are Pakistan Standard Time</p>
-
-    <div class="cards">
-      <div class="card"><div class="big">${esc(today.people_active ?? 0)}</div>opened the app</div>
-      <div class="card"><div class="big">${esc(today.people_doing ?? 0)}</div>did a task</div>
-      <div class="card"><div class="big">${rows.length}</div>people total</div>
-      <div class="card"><div class="big">${esc(today.videos_watched ?? 0)}</div>watched today</div>
-      <div class="card"><div class="big">${esc(today.videos_posted ?? 0)}</div>posted today</div>
-      <div class="card"><div class="big">${esc(today.reviews_written ?? 0)}</div>reviews today</div>
-    </div>
-
-    <p class="sub"><b>Opened the app</b> counts everyone who showed up.
-      <b>Did a task</b> counts only those who watched, posted, or gave or asked
-      for feedback. The gap between them is people arriving and finding nothing
-      worth doing.</p>
-
-    <h2>Who did what, by day</h2>
-    <p class="sub">A number is how many things that person did that day —
-      watching, posting, asking for feedback or giving it. A dot means nothing
-      at all. Scroll sideways for older days.</p>
-    <div class="wrap"><table>
-      <thead><tr><th class="who">Person</th>${head}
-        <th class="n">Active days</th><th class="n">Coins</th></tr></thead>
-      <tbody>${body}</tbody>
-    </table></div>
-
-    <h2>Which build everyone is on</h2>
-    <p class="sub">${behind} of ${[...people.values()].filter((p) => p.lastSeen).length}
-      are not on ${esc(LATEST)}. A blank version means a build from before the app
-      started reporting one, so that person has also missed every fix since.
-      Devices are every kind this person has opened the app on, newest first; a
-      dash means they have not opened a build new enough to say.
-      Times are when they last opened the app, Pakistan time.</p>
-    <div class="wrap"><table>
-      <thead><tr><th class="who">Person</th><th>Build</th>
-        <th>Devices</th><th>Last opened</th></tr></thead>
-      <tbody>${versions}</tbody>
-    </table></div>
-
-    <h2>Opened the app, did nothing</h2>
-    <p class="sub">Days when somebody opened WatchBack and did not watch, post,
-      or give or ask for feedback. Times are Pakistan time. These days are not
-      counted in the table above — opening is not work, and treating it as work
-      made a person who only looked read the same as one who watched a video.
-      Someone appearing here often is worth asking what they could not find.</p>
-    <div class="wrap"><table>
-      <thead><tr><th class="who">Person</th><th>Day</th>
-        <th class="n">Opens</th><th>First</th><th>Last</th>
-        <th>Devices</th></tr></thead>
-      <tbody>${opens || '<tr><td colspan="6">Nobody — everyone who opened it did something.</td></tr>'}</tbody>
-    </table></div>
-
-    <h2>What happened, and when</h2>
-    <p class="sub">The last three days, newest first, in Pakistan time. This is
-      the view that settles &ldquo;I watched but it did not count&rdquo; —
-      including attempts where the video never actually played.</p>
-    <div class="wrap"><table>
-      <thead><tr><th>Time (PKT)</th><th class="who">Person</th>
-        <th>Task</th><th class="n">Coins</th></tr></thead>
-      <tbody>${actions}</tbody>
-    </table></div>
-
-    <h2>Every day, everyone together</h2>
-    <div class="wrap"><table>
-      <thead><tr><th>Day</th><th class="n">Opened</th><th class="n">Did a task</th>
-        <th class="n">New</th>
-        <th class="n">Watched</th><th class="n">Posted</th><th class="n">Asked</th>
-        <th class="n">Reviews</th><th class="n">Coins out</th></tr></thead>
-      <tbody>${daily}</tbody>
-    </table></div>
-
-    <footer>Live from the database every time you open or refresh this page.
-      The only thing kept in this browser is a sign-in token that expires after
-      8 hours, or when you close the tab.</footer>`;
-
-  $('refresh').onclick = () => load({ token: sessionStorage.getItem(TOKEN_KEY) });
-  $('out').onclick = () => {
-    sessionStorage.removeItem(TOKEN_KEY);
-    $('report').classList.add('hide');
-    $('login').classList.remove('hide');
-    $('key').value = '';
-    $('err').textContent = '';
+function corsFor(req: Request): Record<string, string> {
+  const origin = req.headers.get('origin') ?? '';
+  if (!ALLOWED_ORIGINS.includes(origin)) return {};
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-headers': 'content-type',
+    'access-control-allow-methods': 'POST, OPTIONS',
+    'vary': 'Origin',
   };
 }
 
-async function load(body) {
-  const r = await call(body);
-  if (!r.ok) {
-    // An expired or rejected token means the passkey is needed again; say so
-    // rather than leaving a stale page on screen.
-    sessionStorage.removeItem(TOKEN_KEY);
-    $('report').classList.add('hide');
-    $('login').classList.remove('hide');
-    $('err').textContent = message(r);
-    return false;
-  }
-  sessionStorage.setItem(TOKEN_KEY, r.data.token);
-  $('login').classList.add('hide');
-  $('report').classList.remove('hide');
-  render(r.data);
-  return true;
+function json(body: unknown, status: number, req: Request) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      ...corsFor(req),
+    },
+  });
 }
 
-$('login').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  $('go').disabled = true;
-  $('err').textContent = '';
-  await load({ key: $('key').value });
-  $('key').value = '';
-  $('go').disabled = false;
-});
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsFor(req) });
+  }
+  if (req.method !== 'POST') {
+    return json({ error: 'post_only' }, 405, req);
+  }
 
-// A token from earlier in this tab's life skips the passkey.
-const saved = sessionStorage.getItem(TOKEN_KEY);
-if (saved) load({ token: saved });
-</script>
-</body>
-</html>
+  const url = new URL(req.url);
+  // A passkey in the query string would sit in browser history and in every log
+  // along the way. Refuse it rather than quietly accepting it.
+  if (url.searchParams.has('key') || url.searchParams.has('passkey')) {
+    return json({ error: 'no_key_in_url' }, 400, req);
+  }
+
+  const admin = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    { auth: { persistSession: false } },
+  );
+
+  // Everything goes through public.report_* wrappers: the admin schema is not
+  // exposed to PostgREST, and it should stay that way.
+  const { data: secRows } = await admin.rpc('report_secrets');
+  const sec = (secRows ?? [])[0] as Secrets | undefined;
+  if (!sec) return json({ error: 'not_configured' }, 503, req);
+
+  let payload: { key?: string; token?: string };
+  try {
+    payload = await req.json();
+  } catch {
+    return json({ error: 'bad_request' }, 400, req);
+  }
+
+  const hash = await ipHash(req, sec);
+  let token = typeof payload.token === 'string' ? payload.token : '';
+  let authed = token ? await tokenValid(token, sec) : false;
+
+  if (!authed) {
+    const { data: lock } = await admin
+      .rpc('report_gate', { p_ip_hash: hash, p_action: 'check' });
+    if (Number(lock ?? 0) > 0) {
+      return json({ error: 'locked', seconds: Number(lock) }, 429, req);
+    }
+
+    const submitted = String(payload.key ?? '').trim().toUpperCase();
+    const digest = await sha256(sec.salt + submitted);
+    if (!sameDigest(digest, sec.passkey_sha256)) {
+      const { data: locked } = await admin
+        .rpc('report_gate', { p_ip_hash: hash, p_action: 'fail' });
+      // One reply for every failure. Distinguishing "wrong passkey" from
+      // "locked out" tells an attacker which guesses were worth making.
+      return json(
+        { error: 'denied', seconds: Number(locked ?? 0) },
+        Number(locked ?? 0) > 0 ? 429 : 401, req,
+      );
+    }
+
+    await admin.rpc('report_gate', { p_ip_hash: hash, p_action: 'ok' });
+    token = await issueToken(sec);
+    authed = true;
+  }
+
+  // ---- authenticated; only now is any tester data touched ----
+  // Added .limit(10000) to override Supabase's default 1000-row limit API restriction
+  const { data: pd, error: pdErr } = await admin.rpc('report_person_day').limit(10000);
+  const { data: daily } = await admin.rpc('report_daily').limit(10000);
+  
+  // What each person did and when, so a disputed wallet screenshot can be
+  // settled without opening the database.
+  const { data: acts } = await admin.rpc('report_person_actions', {
+    p_email: null,
+    p_days: 3,
+  }).limit(10000);
+  
+  // Opened the app and did nothing with it. Kept apart from the work counts
+  // rather than folded into them: the grid used to render an open as a 1, which
+  // made a person who only looked read the same as one who watched a video.
+  const { data: opens } = await admin.rpc('report_person_opens').limit(10000);
+  
+  if (pdErr) return json({ error: 'read_failed' }, 500, req);
+
+  return json({
+    token,
+    expires_in: SESSION_HOURS * 3600,
+    // generated_at stays a parseable ISO string. The deployed page runs
+    // new Date() on it, and swapping in a pre-formatted string turned that into
+    // "Invalid Date" -- a served page is not redeployed in lockstep with this
+    // function, so never change the shape of a field it already reads.
+    generated_at: new Date().toISOString(),
+    // The pre-formatted one is additive: a new page prefers it, an old page
+    // ignores it and keeps working.
+    generated_at_pkt: new Date().toLocaleString('en-GB', {
+      timeZone: 'Asia/Karachi',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }) + ' PKT',
+    person_day: pd ?? [],
+    daily: daily ?? [],
+    person_actions: acts ?? [],
+    // Additive, like generated_at_pkt: a page that does not know about this
+    // field ignores it and keeps working.
+    person_opens: opens ?? [],
+  }, 200, req);
+});
