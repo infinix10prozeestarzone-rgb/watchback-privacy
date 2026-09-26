@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in on your TV - WatchBack GainMore</title>
+<meta name="robots" content="noindex">
+<style>
+  :root { --brand:#D9042B; --ink:#1a1a1a; --muted:#5f6368; --line:#e4e4e7; }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:28px 20px 40px; max-width:520px; margin-inline:auto;
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    color:var(--ink); background:#fff; text-align:center;
+  }
+  header { border-bottom:3px solid var(--brand); padding-bottom:14px; margin-bottom:24px; }
+  h1 { font-size:1.45rem; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0; }
+  .code { font-size:2.2rem; font-weight:800; letter-spacing:.3rem; margin:18px 0 8px;
+          font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .btn { display:block; width:100%; padding:16px; border-radius:12px; border:0;
+         background:var(--brand); color:#fff; font-size:1.05rem; font-weight:700;
+         text-decoration:none; margin:18px 0 10px; }
+  .box { border:1px solid var(--line); border-radius:10px; padding:14px 18px;
+         margin:22px 0; text-align:left; }
+  .warn { border-color:var(--brand); background:#fff5f7; }
+  ol { margin:6px 0 0; padding-left:20px; }
+  a { color:var(--brand); }
+  footer { margin-top:36px; color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sign in on your TV</h1>
+  <p class="sub">WatchBack GainMore</p>
+</header>
+
+<p>Your television is showing this code:</p>
+<div class="code" id="code">--------</div>
+
+<a class="btn" id="open" href="#">Open WatchBack to sign in the TV</a>
+<p class="sub">The app asks you to confirm. Nothing happens until you do.</p>
+
+<div class="box warn">
+  Only continue if this television is in front of you. Nobody from WatchBack
+  will ever ask you for this code.
+</div>
+
+<div class="box">
+  <strong>If the app does not open</strong>
+  <ol>
+    <li>Open WatchBack GainMore on this phone.</li>
+    <li>Open the Menu, then <strong>Sign in on a TV</strong>.</li>
+    <li>Type the code above.</li>
+  </ol>
+  <p style="margin:10px 0 0">No app yet?
+    <a href="https://play.google.com/store/apps/details?id=com.watchback.gainmore">Get it on Google Play</a>.</p>
+</div>
+
+<footer>
+  <a href="../">Privacy policy</a>
+</footer>
+
+<script>
+  // The television puts its code in the QR as ?c=CODE. It is shown here and
+  // handed to the app through an Android intent link; the app itself asks the
+  // person to confirm before anything is signed in. Nothing is sent anywhere
+  // from this page.
+  (function () {
+    var raw = new URLSearchParams(location.search).get('c') || '';
+    var code = raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    var shown = code.length === 8 ? code.slice(0, 4) + '-' + code.slice(4) : (code || '--------');
+    document.getElementById('code').textContent = shown;
+
+    var play = 'https://play.google.com/store/apps/details?id=com.watchback.gainmore';
+    var intent = 'intent://tv?c=' + encodeURIComponent(code) +
+      '#Intent;scheme=watchback;package=com.watchback.gainmore;' +
+      'S.browser_fallback_url=' + encodeURIComponent(play) + ';end';
+    var link = document.getElementById('open');
+    link.href = /Android/i.test(navigator.userAgent) ? intent : play;
+
+    // Try once straight away; browsers that want a tap first simply ignore
+    // this, and the button is there.
+    if (code.length === 8 && /Android/i.test(navigator.userAgent)) {
+      setTimeout(function () { location.href = intent; }, 300);
+    }
+  })();
+</script>
+</body>
+</html>
